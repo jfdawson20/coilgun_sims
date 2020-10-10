@@ -1,7 +1,7 @@
 #!/usr/bin/python3
 from prettytable import PrettyTable
 import math
-
+import matplotlib.pyplot as plt
 
 
 
@@ -22,14 +22,9 @@ class Projectile():
         self.v      = 0
         self.mass   = mass
         self.ur     = 4000
-
-    def updatePosition(self,locx):
-        self.locx = locx
-        return 0 
-
-    def updateSpeed(self,v):
-        self.v = v  
-        return 0 
+        
+    def update(self,acceleration,time):
+        return 0
 
 class Coil():
     def __init__(self,coilConfig,cid=False,length=False,core_dia=False,out_dia=False,turns=False,gauge=False,locx=False):
@@ -100,31 +95,32 @@ class Coil():
 
         #projectile has not entered core
         if(self.locx >= core_locx):
-            normx = 1;
+            normx = self.len;
 
         #projectile inside core 
         elif(core_locx - self.locx <= self.len):
             normx = self.len - (core_locx - self.locx)
         else:
-            normx = 1; 
+            normx = self.len; 
 
-        
+        #print(normx)        
         L0      = (ur*self.u0*pow(self.turns,2)*self.area)/self.len
         L1      = L0 / ur
         alpha   = math.log(ur)
         
-        if(normx == 1):
-            return L1
+        if(normx == 0):
+            return L0
         else: 
-            Lx  = L0 * math.exp(-(alpha/self.len)*(core_locx))
+            Lx  = L0 * math.exp(-(alpha/self.len)*(normx))
             return(Lx) 
 
         return 0
 
 
 class CoilCircuit():
-    def __init__(self,V0,Cap,switchR,proj,coilConfig):
+    def __init__(self,stage,V0,Cap,switchR,proj,coilConfig):
         self.init = True 
+        self.id   = stage
         self.on   = False
 
         self.V0      = V0
@@ -156,7 +152,7 @@ class CoilCircuit():
         #under-damped condition
         elif(self.Alpha < self.W):
             self.Wd = math.sqrt(pow(self.W,2) - pow(self.Alpha,2))
-            it = ((-self.V0 * math.exp(-self.Aplha * time))/(self.L * self.Wd))*math.sin(self.Wd * time)
+            it = ((-self.V0 * math.exp(-self.Alpha * time))/(self.L * self.Wd))*math.sin(self.Wd * time)
 
         #critically damped condition
         else:
@@ -164,22 +160,125 @@ class CoilCircuit():
 
         return it
 
-    def getForce(self,i):
+    def getForce(self,i,core_locx):
+        #if projectile is not in coil, assume no force applied
+        if(core_locx < self.Coil.locx):
+            return 0 
+
         F = (pow(self.Coil.turns*i,2)*self.Coil.u0*self.Coil.area)/(2*pow(self.Coil.airGap,2))
         return F
 
-    def updateCoilCircuit(self,time,proj)
+    def updateCoilCircuit(self,time,proj):
         #update inductance with position of projectile 
+        #print(proj.locx)
         self.L       = self.Coil.calcInductance(proj.locx,proj.ur)
 
         #get current 
         i = self.getCurrent(time)
 
         #get force 
-        f = self.getForce(i)
+        f = self.getForce(i,proj.locx)
+    
+        return(i,f,self.L)
 
-    def processData(self,data):
+                   
+    def StepCircuit(self,proj):
+        return 0;
+   
 
+class Simulation():
+    def __init__(self,V0,C,cfg,stages, stageSpacing):
+        self.init = True
+        self.V0   = V0
+        self.C    = C
+        self.numStages = stages
+        self.spacing   = stageSpacing 
+        self.proj = Projectile(0.00569)
+   
+        self.coils = []
+        #create n stages of coils 
+        for i in range(self.numStages):
+            tmp = cfg
+            tmp["cid"] = i
+            tmp["locx"] = i*(self.spacing + tmp["length"])
+            self.coils.append(CoilCircuit(i,200,0.006,0.00014,self.proj,tmp))
+
+    def Exec(self,dur): 
+
+        time=0
+        cntr=0
+        accel   = [(0,0)]
+        veloc   = [(0,0)]
+        posit   = [(0,0)]
+        stageResults = []
+        coilTime = 0
+        prefire = 0.02
+        
+        #iterate across all stages, calculating the changes in coil and projectile properties over time
+        for i in range(self.numStages):
+            samples = []
+
+            #stop coil run when projectile reaches midway point in col 
+            while(self.proj.locx < (self.coils[i].Coil.locx + self.coils[i].Coil.len/2)):
+                
+                #if were not in the coil yet, don't fire
+                if(self.proj.locx < (self.coils[i].Coil.locx - prefire)):
+                    coilTime = 0
+                
+                #1) get coil updates
+                current,force,inductance = self.coils[i].updateCoilCircuit(coilTime,self.proj) 
+        
+                #2) Update Projectile properties
+                acceleration = force/self.proj.mass
+                accel.append((acceleration,time))
+        
+                if(time == 0):
+                    velocity = 0
+                    position = 0
+                else:
+                    velocity = ((accel[cntr-1][0] + accel[cntr][0])/2) * (accel[cntr][1] - accel[cntr-1][1]) + veloc[cntr-1][0]
+                    position = ((veloc[cntr-1][0] + veloc[cntr][0])/2) * (veloc[cntr][1] - veloc[cntr-1][1]) + posit[cntr-1][0]
+            
+
+                veloc.append((velocity,time))
+                posit.append((position,time))
+                self.proj.locx = position
+
+                #log data 
+                tmp = [current,force,acceleration,velocity,inductance,coilTime,self.proj.locx,time]
+        
+                samples.append(tmp)
+                time = time + 0.000001
+                coilTime = coilTime + 0.000001
+                cntr = cntr + 1
+            
+
+            ret = sim.processStageData(samples)
+            stageResults.append(ret)
+            
+            print(self.displayData(ret))
+
+        x = PrettyTable()
+        x.field_names = ["Stage","On Time","Peak Current","Exit Velocity"] 
+        st = 0
+        for s in stageResults:
+            
+            peakC = 0
+            for data in s:
+                if (abs(data[2]) > peakC):
+                    peakC = abs(data[2])
+
+            x.add_row([st,s[len(s)-1][0],peakC,s[len(s)-1][6]])
+            #print(s[len(s)-1])
+
+            st = st + 1
+        print(x)
+
+        return 0
+
+    def processStageData(self,data):
+        #tmp = [current,force,acceleration,velocity,inductance,time,proj.locx]
+ 
         results = []
         isum    = []
         for i in range(len(data)):
@@ -187,75 +286,45 @@ class CoilCircuit():
                 isum.append(0)
                 continue 
             
-            tmp = (((data[i-1][0] + data[i][0])/2) * (data[i-1][2] - data[i][2])) + isum[i-1]
+            tmp = (((data[i-1][0] + data[i][0])/2) * (data[i-1][5] - data[i][5])) + isum[i-1]
             #print(tmp)
             isum.append(tmp)
 
         for i in range(len(data)):
             if(i == 0):
-                tmp = (self.V0,data[0][0],data[0][1],data[0][2])
+                tmp = (data[0][5],self.V0,data[0][0],data[0][4],data[0][1],data[0][2],data[0][3],data[0][6],data[0][7])
             
             else: 
                 voltage = self.V0 - (1/self.C)*isum[i]
-                tmp = (voltage,data[i][0],data[i][1],data[i][2])
+                tmp = (data[i][5],voltage,data[i][0],data[i][4],data[i][1],data[i][2],data[i][3],data[i][6],data[i][7])
             
             results.append(tmp)
         
+        return(results)
+
+    def displayData(self,results):
         x = PrettyTable()
-        x.field_names = ["Cap Voltage", "Circuit Current", "Force", "TIme"]
+        #x.field_names = ["Cap Voltage", "Circuit Current", "Force", "TIme"]
+        x.field_names = ["Absolute Time", "Coil Time","Cap Voltage", "Circuit Current", "Coil Inductance","Force","Projectile Acceleration", "Projectile Velocity", "Projectile Position"]
         for r in results: 
-            x.add_row([r[0],r[1],r[2],r[3]])
+            #x.add_row([r[0],r[1],r[2],r[3]])
+            x.add_row([r[8],r[0],r[1],r[2],r[3],r[4],r[5],r[6],r[7]])
 
         return(x)
-                
-
-
-    
-    def StepCircuit(self,proj):
-        return 0;
-
-
-
-class Coilgun():
-    def __init__(self):
-        self.init = True
-
-
-class Simulation():
-    def __init__(self):
-        self.init = True
-
-    def Exec(self): 
-        print("hello")
-        return 0
 
 if __name__ == "__main__":
-    sim = Simulation()
-    sim.Exec()
-
-    proj = Projectile(0.007)
-    
+   
     cfg = {}
     cfg["cid"]      = 0
     cfg["length"]   = 0.0254
     cfg["core_dia"] = 0.006
     cfg["out_dia"]  = 0.009525
-    cfg["turns"]    = 200
+    cfg["turns"]    =  80
     cfg["gauge"]    = "26AWG"
-    cfg["locx"]     = 0.0254
+    cfg["locx"]     = 0
 
-    #c = Coil(False,0,0.0254,0.006,0.009525,200,"20AWG",0.0254)
-    c = CoilCircuit(200,0.006,0.00014,proj,cfg)
-   
-    i=0
-    samples = []
-    while (i < 0.00050):
-        tmp = c.getForce(i,proj)
-        samples.append(tmp)
-        #print(tmp)
-        i = i + 0.000001
-    
-    
-    ret = c.processData(samples)
+    sim = Simulation(600,0.006,cfg,16,0.0508)
 
-    print(ret)
+    sim.Exec(0.001) 
+
+    
