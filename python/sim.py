@@ -323,7 +323,7 @@ if __name__ == "__main__":
     cfg["gauge"]    = "26AWG"
     cfg["locx"]     = 0
 
-    sim = Simulation(600,0.006,cfg,16,0.0508)
+    sim = Simulation(200,0.006,cfg,16,0.0508)
 
     sim.Exec(0.001) 
 
