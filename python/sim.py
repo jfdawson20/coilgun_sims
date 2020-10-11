@@ -415,11 +415,44 @@ class Simulation():
         
         abstime = []
         current = []
+        veloc   = []
+        pos     = []
+        acc     = []
+
+        fig , axs = plt.subplots(2, 2)
+       
+        #first graph coil current vs time
+        axs[0, 0].set_xlabel('Absolute Time (s)')
+        axs[0, 0].set_ylabel('Coil(s) Current (A)')
+
         for s in stageRes:
+            marker = 0 
             for data in s:
+                if(data["FORCE"] != 0 and marker == 0):
+                    axs[0, 0].axvline(x=data["ABS_TIME"])
+                    marker = 1
+
                 abstime.append(data["ABS_TIME"])
                 current.append(data["CURRENT"])
-            plt.plot(abstime,current)
+                veloc.append(data["VELOCITY"])
+                pos.append(data["PROJ_LOCX"])
+                acc.append(data["ACCELERATION"])
+        
+            axs[0, 0].plot(abstime,current)
+            axs[1, 0].plot(abstime,veloc)
+            axs[0, 1].plot(abstime,pos)
+            axs[1, 1].plot(abstime,acc)
+
+    
+        axs[1, 0].set_xlabel('Absolute Time (s)')
+        axs[1, 0].set_ylabel('Projectile Velocity (m/s)')
+
+        axs[0, 1].set_xlabel('Absolute Time (s)')
+        axs[0, 1].set_ylabel('Projectile Position (m)')
+
+        axs[1, 1].set_xlabel('Absolute Time (s)')
+        axs[1, 1].set_ylabel('Projectile Acceleration (m/s^2)')
+
 
         plt.show()
 
