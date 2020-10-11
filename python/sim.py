@@ -56,8 +56,11 @@ class Coil():
         #based on user provided data 
 
         self.u0             = 4*math.pi*pow(10,-7)
-        self.area           = math.pi*pow(self.out_dia/2,2)
-        self.wireLen        = (2*math.pi*(self.out_dia/2)) * self.turns 
+        self.area           = math.pi*pow(self.core_dia/2,2)
+        
+        self.forceArea      = math.pi*pow(self.proj_dia/2,2)
+
+        self.wireLen        = (2*math.pi*(self.core_dia/2)) * self.turns 
         self.wireDia        = (wire_dict[self.gauge]/1000)  
         self.wireArea       = math.pi*pow(self.wireDia/2,2)
         self.wireAreaMils   =  (self.wireArea * 1973525241.77) 
@@ -82,6 +85,8 @@ class Coil():
             self.ambt       = config["ambt"]
             self.maxt       = config["maxt"]
             self.maxc       = config["maxc"]
+            self.profile    = config["profile"]
+            self.proj_dia   = config["proj_dia"]
 
     def calcSeriesR(self):
         return self.seriesR
@@ -161,12 +166,17 @@ class CoilCircuit():
         self.L       = self.Coil.calcInductance(0,proj.ur)
         self.R       = self.SwitchR + self.Coil.calcSeriesR()
          
-        self.cur_v   = self.V0
-        self.cur_i   = 0
-        self.time    = 0
+        #self.cur_v   = self.V0
+        #self.cur_i   = 0
+        #self.time    = 0
         
         self.maxCurrent, self.maxTime = self.timeToMaxI()
-        print("Max Current %f, Max Time %f\n" % (self.maxCurrent,self.maxTime))
+        #print("Max Current %f, Max Time %f\n" % (self.maxCurrent,self.maxTime))
+    
+    def dumpCircuitConfig(self):
+        print("Voltage: %f\n" % self.V0)
+        print("Capacitance: %f\n" % self.C)
+        self.Coil.dumpStats()
 
     def getCurrent(self,time):
  
@@ -206,10 +216,12 @@ class CoilCircuit():
 
     def getForce(self,i,core_locx):
         #if projectile is not in coil, assume no force applied
-        if(core_locx < self.Coil.locx):
-            return 0 
+        F = (pow(self.Coil.turns*i,2)*self.Coil.u0*self.Coil.forceArea)/(2*pow(self.Coil.airGap,2))
 
-        F = (pow(self.Coil.turns*i,2)*self.Coil.u0*self.Coil.area)/(2*pow(self.Coil.airGap,2))
+        if(core_locx < self.Coil.locx):
+            return 0#1/pow((self.Coil.locx - core_locx),2)
+
+            
         return F
 
     def updateCoilCircuit(self,time,proj):
@@ -235,6 +247,7 @@ class Simulation():
         self.init = True
         self.V0   = V0
         self.C    = C
+        self.switchR = 0.00014
         self.numStages = stages
         self.spacing   = stageSpacing 
         self.proj = Projectile(0.00569)
@@ -245,11 +258,31 @@ class Simulation():
             tmp = cfg
             tmp["cid"] = i
             tmp["locx"] = i*(self.spacing + tmp["length"])
-            self.coils.append(CoilCircuit(i,200,0.006,0.00014,self.proj,tmp))
+            self.coils.append(CoilCircuit(i,self.V0,self.C,self.switchR,self.proj,tmp))
 
     
+    def updateCoil(self,coilID, config):
+        tmp = config
+        tmp["cid"] = coilID
+        tmp["locx"] = coilID*(self.spacing + tmp["length"])
+
+        self.coils[coilID] = CoilCircuit(coilID,self.V0,self.C,self.switchR,self.proj,tmp)
+
+        return 0 
+    
+    def getCoilConfig(self):
+        cfgs = []
+        for coil in self.coils:
+            cfgs.append((coil.Coil.cid,coil.Coil.profile))
+
+        return cfgs
+
+    def dumpConfig(self):
+        for coils in self.coils:
+            coils.dumpCircuitConfig()
+
     #execute simulation with specified parameters
-    def Exec(self,dur,prefire_en=False): 
+    def Exec(self,prefire_en=False): 
 
         time=0
         cntr=0
@@ -259,6 +292,8 @@ class Simulation():
         veloc   = [(0,0)]
         posit   = [(0,0)]
         stageResults = []
+        self.proj = Projectile(0.00569)
+        print(self.proj.locx)
 
         #iterate across all stages, calculating the changes in coil and projectile properties over time
         for i in range(self.numStages):
@@ -277,7 +312,7 @@ class Simulation():
                         coil_ovr = 1
                 
                     else:
-                        prefire = -(self.timeToCoil * self.proj.velocity)
+                        prefire = (timeToCoil * self.proj.velocity)
     
             else:
                 prefire     = 0
@@ -335,27 +370,7 @@ class Simulation():
             ret = sim.processStageData(samples,i)
             stageResults.append(ret)
             
-            print(self.displayData(ret))
-            print("\n\n")
-        x = PrettyTable()
-        x.field_names = ["Stage","On Time","Max Coil Temp","Peak Current","Exit Velocity"] 
-        st = 0
-        for s in stageResults:
-            
-            peakC = 0
-            for data in s:
-                if (abs(data["CURRENT"]) > peakC):
-                    peakC = abs(data["CURRENT"])
-
-            x.add_row([st,s[len(s)-1]["COIL_TIME"],s[len(s)-1]["COIL_TEMP"],peakC,s[len(s)-1]["VELOCITY"]])
-            #print(s[len(s)-1])
-
-            st = st + 1
-        print(x)
-        
-        self.plotData(stageResults)
-
-        return 0
+        return stageResults
 
     def processStageData(self,data,stage): 
         results = []
@@ -415,12 +430,13 @@ class Simulation():
         
         abstime = []
         current = []
+        force   = []
         veloc   = []
         pos     = []
         acc     = []
 
-        fig , axs = plt.subplots(2, 2)
-       
+        fig , axs = plt.subplots(3, 2)
+         
         #first graph coil current vs time
         axs[0, 0].set_xlabel('Absolute Time (s)')
         axs[0, 0].set_ylabel('Coil(s) Current (A)')
@@ -430,6 +446,7 @@ class Simulation():
             for data in s:
                 if(data["FORCE"] != 0 and marker == 0):
                     axs[0, 0].axvline(x=data["ABS_TIME"])
+                    axs[2, 0].axvline(x=data["ABS_TIME"])
                     marker = 1
 
                 abstime.append(data["ABS_TIME"])
@@ -437,12 +454,13 @@ class Simulation():
                 veloc.append(data["VELOCITY"])
                 pos.append(data["PROJ_LOCX"])
                 acc.append(data["ACCELERATION"])
-        
+                force.append(data["FORCE"])
+                
             axs[0, 0].plot(abstime,current)
             axs[1, 0].plot(abstime,veloc)
             axs[0, 1].plot(abstime,pos)
             axs[1, 1].plot(abstime,acc)
-
+            axs[2, 0].plot(abstime,force)
     
         axs[1, 0].set_xlabel('Absolute Time (s)')
         axs[1, 0].set_ylabel('Projectile Velocity (m/s)')
@@ -453,20 +471,93 @@ class Simulation():
         axs[1, 1].set_xlabel('Absolute Time (s)')
         axs[1, 1].set_ylabel('Projectile Acceleration (m/s^2)')
 
+        axs[2, 0].set_xlabel('Absolute Time (s)')
+        axs[2, 0].set_ylabel('Coil(s) Force (N)')
 
+           
         plt.show()
 
+    def showResults(self,res,verbose=False,plots=False):
+        
+        if(verbose == True):
+            for ret in res:
+                print(self.displayData(ret))
+                print("\n\n")
+ 
+        x = PrettyTable()
+        x.field_names = ["Stage","On Time","Max Coil Temp","Peak Current","Min Inductance","Exit Velocity"] 
+        st = 0
+        for s in res:
+            
+            peakC = 0
+            for data in s:
+                if (abs(data["CURRENT"]) > peakC):
+                    peakC = abs(data["CURRENT"])
+
+            x.add_row([st,s[len(s)-1]["COIL_TIME"],s[len(s)-1]["COIL_TEMP"],peakC,s[0]["INDUCTANCE"],s[len(s)-1]["VELOCITY"]])
+            #print(s[len(s)-1])
+
+            st = st + 1
+        print(x)
+       
+        if(plots == True):
+            self.plotData(res)
+
+
+    def Optimize(self): 
+         
+        trial_results = []
+        run = self.Exec(True)
+        trial_results.append(run)
+        
+        max_veloc = run[self.numStages-1][len(run[self.numStages-1])-1]["VELOCITY"]
+        max_cfg = self.getCoilConfig()
+        max_stage_cfg = coil_profiles[0]
+    
+        for stages in range(2):
+            for coils in coil_profiles:
+                print("Optimizing Stage %i, Coil Profile %f\n" % (stages,coils["profile"]))
+                for cfgs in self.getCoilConfig():
+                    print(cfgs)
+
+                self.dumpConfig()
+
+                #update coil configuration
+                self.updateCoil(stages,coils)
+
+                #run the sim 
+                run = self.Exec(True)
+                trial_results.append(run)
+                
+                #check results. If final stage velocity is higher than last recorded max. update 
+                if(run[self.numStages-1][len(run[self.numStages-1])-1]["VELOCITY"] > max_veloc):
+                    max_veloc       = run[len(run)-1]["VELOCITY"]
+                    max_cfg         = getCoilConfig()
+                    max_stage_cfg   = coils
+
+                self.showResults(run,verbose=False)
+
+            self.updateCoil(stages,max_stage_cfg)
+
+        print("RESULTS\n")
+        print("Max Velocity: %f\n" % (max_veloc))
+        for c in max_cfg: 
+            print(c)
+
+        return 0
 if __name__ == "__main__":
    
 
     for i in range(10):
         cfg = {}
+        cfg["profile"]  = i
         cfg["cid"]      = 0
-        cfg["length"]   = 0.0381
-        cfg["core_dia"] = 0.006
-        cfg["out_dia"]  = 0.009525
-        cfg["turns"]    =  100 + (i*50)
-        cfg["gauge"]    = "26AWG"
+        cfg["length"]   = 0.035
+        cfg["proj_dia"] = 0.006
+        cfg["core_dia"] = 0.0098
+        cfg["out_dia"]  = 0.017
+        cfg["turns"]    =  200#80 + (i*10)
+        cfg["gauge"]    = "20AWG"
         cfg["locx"]     = 0
         cfg["ambt"]     = 25
         cfg["maxt"]     = 60
@@ -476,6 +567,6 @@ if __name__ == "__main__":
 
     sim = Simulation(200,0.006,coil_profiles[0],8,0.0127)
 
-    sim.Exec(0.001,True)
-
-    
+    #ret = sim.Optimize() 
+    ret = sim.Exec(True)
+    sim.showResults(ret,plots=True)
