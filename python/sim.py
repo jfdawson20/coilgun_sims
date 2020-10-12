@@ -2,8 +2,12 @@
 from prettytable import PrettyTable
 import math
 import matplotlib.pyplot as plt
+import time as Time
+
 
 coil_profiles = []
+
+
 
 #copper wire table for calculating resistance based on wire size
 copper_res = 1.72 * math.pow(10,-8) #ohm/m
@@ -257,7 +261,7 @@ class CoilCircuit():
         #if projectile is not in coil, assume no force applied
         F = (pow(self.Coil.turns*i,2)*self.Coil.u0*self.Coil.forceArea)/(2*pow(self.Coil.airGap,2))
 
-        if(core_locx < self.Coil.locx):
+        if(core_locx < self.Coil.locx or ((core_locx - self.Coil.locx) > self.Coil.len/2)):
             return 0#1/pow((self.Coil.locx - core_locx),2)
 
             
@@ -411,6 +415,172 @@ class Simulation():
             
         return stageResults
 
+
+    #execute simulation with specified parameters
+    def Exec2(self,prefire_en=False): 
+
+        time=0
+        cntr=0
+        #arrays of velocity,acceleration,position data (data,timestamp)
+        #these are global and are tracked for the full sim 
+        accel   = [(0,0)]
+        veloc   = [(0,0)]
+        posit   = [(0,0)]
+        stageResults = []
+        coilTimes    = []
+        distanceToCoils = []
+        timeToCoils     = []
+        prefires        = []
+        coil_ovrs       = []
+        currents        = []
+        forces          = []
+        inductances     = []
+        samples         = []
+        simSamples      = []
+        stageActive     = []
+
+        for i in range(self.numStages):
+            distanceToCoils.append(0)
+            timeToCoils.append(0)
+            prefires.append(0)
+            coil_ovrs.append(0)
+            coilTimes.append(0)
+            samples.append([])
+            currents.append(0)
+            forces.append(0)
+            inductances.append(0)
+            stageActive.append(0)
+        
+
+        self.proj = Projectile(0.00569)
+        #print(self.proj.locx)
+
+        
+        while(self.proj.locx < 0.5):
+            activeForce = 0
+            tmp = {}
+            #get the status of all coils in the system
+            for i in range(self.numStages):
+
+                if(self.proj.velocity == 0): 
+                    distanceToCoils[i] = self.coils[i].Coil.locx 
+                    timeToCoils[i]     = 0
+                else:
+                    distanceToCoils[i]   = self.coils[i].Coil.locx - self.proj.locx
+                    timeToCoils[i]      = distanceToCoils[i]/self.proj.velocity
+                
+                #print(distanceToCoils[i],timeToCoils[i])
+
+                #if we are past the first stage , assume projectile is moving and calculate optimum turn on point
+                if(prefire_en == True):
+                    if(timeToCoils[i] <= self.coils[i].maxTime):
+                        prefires[i] = (timeToCoils[i] * self.proj.velocity)
+    
+                else:
+                    prefires[i]     = 0
+               
+                #1) get coil updates
+                currents[i],forces[i],inductances[i] = self.coils[i].updateCoilCircuit(coilTimes[i],self.proj) 
+                #print(i,currents[i],forces[i],inductances[i])
+
+                #only one coil will be applying force at a time
+                activeForce = activeForce + forces[i]
+                #print(forces[i]) 
+            
+            #2) Update Projectile properties
+            acceleration = activeForce/self.proj.mass
+            accel.append((acceleration,time))
+        
+            if(time == 0):
+                velocity = 0
+                position = 0
+            else:
+                velocity = ((accel[cntr-1][0] + accel[cntr][0])/2) * (accel[cntr][1] - accel[cntr-1][1]) + veloc[cntr-1][0]
+                position = ((veloc[cntr-1][0] + veloc[cntr][0])/2) * (veloc[cntr][1] - veloc[cntr-1][1]) + posit[cntr-1][0]
+            
+
+            veloc.append((velocity,time))
+            posit.append((position,time))
+            self.proj.locx          = position
+            self.proj.velocity      = velocity
+            self.proj.acceleration  = acceleration
+
+            #log data 
+            #tmp = [current,force,acceleration,velocity,inductance,coilTime,self.proj.locx,time]
+            samples = []
+            for i in range(self.numStages):
+                tmp = {}
+                #print(currents[i])
+                if(stageActive[i] == 1):
+                    tmp["CURRENT"]          = currents[i]
+                    tmp["FORCE"]            = forces[i]
+                    tmp["ACCELERATION"]     = acceleration
+                    tmp["VELOCITY"]         = velocity
+                    tmp["INDUCTANCE"]       = inductances[i] 
+                    tmp["COIL_TIME"]        = coilTimes[i]
+                    tmp["PROJ_LOCX"]        = self.proj.locx
+                    tmp["ABS_TIME"]         = time
+                else:
+                    tmp["CURRENT"]          = currents[i]
+                    tmp["FORCE"]            = 0
+                    tmp["ACCELERATION"]     = 0
+                    tmp["VELOCITY"]         = 0
+                    tmp["INDUCTANCE"]       = inductances[i]
+                    tmp["COIL_TIME"]        = coilTimes[i]
+                    tmp["PROJ_LOCX"]        = self.proj.locx
+                    tmp["ABS_TIME"]         = time
+ 
+
+                samples.append(tmp)
+
+            #update counters 
+            for i in range(self.numStages):
+                #if projectile is too far away from coil, dont fire 
+                if(self.proj.locx < (self.coils[i].Coil.locx - prefires[i])):
+                    coilTimes[i] = 0
+                    #stageActive[i] = 0
+                    #print("hello")
+
+                elif(self.proj.locx >= (self.coils[i].Coil.locx - prefires[i]) and (self.proj.locx - self.coils[i].Coil.locx <= self.coils[i].Coil.len/2)):
+                    coilTimes[i] = coilTimes[i] + 0.000001
+                    #stageActive[i] = 1
+
+                else:
+                    coilTimes[i] = 0
+                    #stageActive[i] = 0
+
+                
+                if(self.proj.locx >= self.coils[i].Coil.locx and  self.proj.locx - self.coils[i].Coil.locx <= self.coils[i].Coil.len/2):
+                    stageActive[i] = 1
+                else:
+                    stageActive[i] = 0
+            
+            #for x in samples:
+            #    print(x)
+            #    print("\n")
+
+            simSamples.append(samples)
+
+            #Time.sleep(0.01) 
+            time = time + 0.000001
+            cntr = cntr + 1
+            
+        
+        for i in range(self.numStages):
+            sam = []
+            for s in simSamples:
+                sam.append(s[i])
+            
+            ret = sim.processStageData(sam,i)
+            stageResults.append(ret)
+
+        #for i in range(self.numStages):
+        #    ret = sim.processStageData(samples[i],i)
+        #    stageResults.append(ret)
+            
+        return stageResults
+
+
     def processStageData(self,data,stage): 
         results = []
 
@@ -467,40 +637,62 @@ class Simulation():
 
     def plotData(self,stageRes):
         
-        abstime = []
-        current = []
-        force   = []
-        veloc   = []
-        pos     = []
-        acc     = []
-
+        abstimes = []
+        currents = []
+        forces   = []
+        velocs   = []
+        poss     = []
+        accs     = []
+       
         fig , axs = plt.subplots(3, 2)
          
         #first graph coil current vs time
         axs[0, 0].set_xlabel('Absolute Time (s)')
         axs[0, 0].set_ylabel('Coil(s) Current (A)')
-
+        i = 0
+        #for each stage of data
         for s in stageRes:
+            abstime = []
+            current = []
+            force   = []
+            veloc   = []
+            pos     = []
+            acc     = []
+ 
+            #iterate through all datapoints
             marker = 0 
             for data in s:
+                #mark entry of projectile into coil 
                 if(data["FORCE"] != 0 and marker == 0):
                     axs[0, 0].axvline(x=data["ABS_TIME"])
                     axs[2, 0].axvline(x=data["ABS_TIME"])
                     marker = 1
 
-                abstime.append(data["ABS_TIME"])
                 current.append(data["CURRENT"])
                 veloc.append(data["VELOCITY"])
-                pos.append(data["PROJ_LOCX"])
                 acc.append(data["ACCELERATION"])
                 force.append(data["FORCE"])
                 
-            axs[0, 0].plot(abstime,current)
-            axs[1, 0].plot(abstime,veloc)
-            axs[0, 1].plot(abstime,pos)
-            axs[1, 1].plot(abstime,acc)
-            axs[2, 0].plot(abstime,force)
-    
+                pos.append(data["PROJ_LOCX"])
+                abstime.append(data["ABS_TIME"])
+ 
+            abstimes.append(abstime)
+            currents.append(current)
+            forces.append(force)
+            poss.append(pos)
+            accs.append(acc)
+            velocs.append(veloc)
+        
+        #print(abstimes[0])
+
+        for i in range(self.numStages):
+            axs[0, 0].plot(abstimes[0],currents[i])
+            axs[1, 0].plot(abstimes[0],velocs[i])
+            axs[1, 1].plot(abstimes[0],accs[i])
+            axs[2, 0].plot(abstimes[0],forces[i])
+
+        axs[0, 1].plot(abstimes[0],poss[0])
+
         axs[1, 0].set_xlabel('Absolute Time (s)')
         axs[1, 0].set_ylabel('Projectile Velocity (m/s)')
 
@@ -529,11 +721,19 @@ class Simulation():
         for s in res:
             
             peakC = 0
+            peakV = 0 
+            peakT = 0
             for data in s:
                 if (abs(data["CURRENT"]) > peakC):
                     peakC = abs(data["CURRENT"])
 
-            x.add_row([st,s[len(s)-1]["COIL_TIME"],s[len(s)-1]["COIL_TEMP"],peakC,s[0]["INDUCTANCE"],s[len(s)-1]["VELOCITY"]])
+                if(data["VELOCITY"] > peakV):
+                    peakV = data["VELOCITY"]
+
+                if(data["COIL_TEMP"] > peakT):
+                    peakT = data["COIL_TEMP"]
+
+            x.add_row([st,s[len(s)-1]["COIL_TIME"],peakT,peakC,s[0]["INDUCTANCE"],peakV])
             #print(s[len(s)-1])
 
             st = st + 1
@@ -584,6 +784,20 @@ class Simulation():
             print(c)
 
         return 0
+
+    def coilCalculator(self,targetR, corelen, core_dia):
+        for gauges in wire_dict:
+            wireDia        = (wire_dict[gauges]/1000)  
+            wireArea       = math.pi*pow(wireDia/2,2)
+            wireAreaMils   =  (wireArea * 1973525241.77) 
+            maxSLT         = math.floor(corelen / wireDia) 
+        
+            wireLen = (targetR * wireArea)/copper_res
+            
+            turns = wireLen / (2*math.pi*(core_dia/2))
+            print("%s : %f" % (gauges,turns))
+ 
+
 if __name__ == "__main__":
    
 
@@ -594,7 +808,7 @@ if __name__ == "__main__":
         cfg["length"]   = 0.035
         cfg["proj_dia"] = 0.006
         cfg["core_dia"] = 0.0098
-        cfg["turns"]    =  150#80 + (i*10)
+        cfg["turns"]    =  250#80 + (i*10)
         cfg["gauge"]    = "20AWG"
         cfg["locx"]     = 0
         cfg["ambt"]     = 25
@@ -607,5 +821,8 @@ if __name__ == "__main__":
 
     #ret = sim.Optimize() 
 
-    ret = sim.Exec(True)
-    sim.showResults(ret,plots=True)
+    ret = sim.Exec2(True)
+    sim.showResults(ret,plots=True,verbose=False)
+
+
+    sim.coilCalculator(0.5,0.035,0.0098)
