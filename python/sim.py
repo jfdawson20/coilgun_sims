@@ -3,7 +3,7 @@ from prettytable import PrettyTable
 import math
 import matplotlib.pyplot as plt
 import time as Time
-
+import argparse 
 
 coil_profiles = []
 
@@ -257,6 +257,20 @@ class CoilCircuit():
 
         return (max_current,maxTime)
 
+    def timeToTargetI(self,target):
+        i = 0
+        maxTime = 0
+        max_current = 0
+        while(i < 0.01):
+            current = abs(self.getCurrent(i))
+            if(current > max_current):
+                max_current = current
+                maxTime = i
+            i = i +0.000001
+
+        return (max_current,maxTime)
+
+
     def getForce(self,i,core_locx):
         #if projectile is not in coil, assume no force applied
         F = (pow(self.Coil.turns*i,2)*self.Coil.u0*self.Coil.forceArea)/(2*pow(self.Coil.airGap,2))
@@ -301,6 +315,8 @@ class Simulation():
             tmp = cfg
             tmp["cid"] = i
             tmp["locx"] = i*(self.spacing + tmp["length"])
+            tmp["turns"] = cfg["turns"]-20
+
             self.coils.append(CoilCircuit(i,self.V0,self.C,self.switchR,self.proj,tmp))
 
     
@@ -430,7 +446,6 @@ class Simulation():
         coilTimes    = []
         distanceToCoils = []
         timeToCoils     = []
-        prefires        = []
         coil_ovrs       = []
         currents        = []
         forces          = []
@@ -442,7 +457,6 @@ class Simulation():
         for i in range(self.numStages):
             distanceToCoils.append(0)
             timeToCoils.append(0)
-            prefires.append(0)
             coil_ovrs.append(0)
             coilTimes.append(0)
             samples.append([])
@@ -469,16 +483,7 @@ class Simulation():
                     distanceToCoils[i]   = self.coils[i].Coil.locx - self.proj.locx
                     timeToCoils[i]      = distanceToCoils[i]/self.proj.velocity
                 
-                #print(distanceToCoils[i],timeToCoils[i])
-
-                #if we are past the first stage , assume projectile is moving and calculate optimum turn on point
-                if(prefire_en == True):
-                    if(timeToCoils[i] <= self.coils[i].maxTime):
-                        prefires[i] = (timeToCoils[i] * self.proj.velocity)
-    
-                else:
-                    prefires[i]     = 0
-               
+              
                 #1) get coil updates
                 currents[i],forces[i],inductances[i] = self.coils[i].updateCoilCircuit(coilTimes[i],self.proj) 
                 #print(i,currents[i],forces[i],inductances[i])
@@ -535,21 +540,22 @@ class Simulation():
 
             #update counters 
             for i in range(self.numStages):
-                #if projectile is too far away from coil, dont fire 
-                if(self.proj.locx < (self.coils[i].Coil.locx - prefires[i])):
-                    coilTimes[i] = 0
-                    #stageActive[i] = 0
-                    #print("hello")
-
-                elif(self.proj.locx >= (self.coils[i].Coil.locx - prefires[i]) and (self.proj.locx - self.coils[i].Coil.locx <= self.coils[i].Coil.len/2)):
-                    coilTimes[i] = coilTimes[i] + 0.000001
-                    #stageActive[i] = 1
-
-                else:
-                    coilTimes[i] = 0
-                    #stageActive[i] = 0
-
+                #if we are within prefire range (e.g. projectile will reach coil at or before optimal current peak) and the projectile has also not left the coil
+                #enable the coil
                 
+                if(prefire_en == True):
+                    if(timeToCoils[i] <= self.coils[i].maxTime and (self.proj.locx - self.coils[i].Coil.locx <= self.coils[i].Coil.len/2)):
+                        coilTimes[i] = coilTimes[i] + 0.000001
+                
+                    #else set the time to zero which effectivly shuts off the coil
+                    else:
+                        coilTimes[i] = 0
+                else:
+                    if(self.proj.locx >= self.coils[i].Coil.locx and  self.proj.locx - self.coils[i].Coil.locx <= self.coils[i].Coil.len/2):
+                        coilTimes[i] = coilTimes[i] + 0.000001
+                    else:
+                        coilTimes[i] = 0
+ 
                 if(self.proj.locx >= self.coils[i].Coil.locx and  self.proj.locx - self.coils[i].Coil.locx <= self.coils[i].Coil.len/2):
                     stageActive[i] = 1
                 else:
@@ -716,13 +722,14 @@ class Simulation():
                 print("\n\n")
  
         x = PrettyTable()
-        x.field_names = ["Stage","On Time","Max Coil Temp","Peak Current","Min Inductance","Exit Velocity"] 
+        x.field_names = ["Stage","On Time","Max Coil Temp","Exit Cap Voltage","Peak Current","Min Inductance","Exit Velocity"] 
         st = 0
         for s in res:
             
             peakC = 0
             peakV = 0 
             peakT = 0
+            minV  = self.V0
             for data in s:
                 if (abs(data["CURRENT"]) > peakC):
                     peakC = abs(data["CURRENT"])
@@ -733,7 +740,11 @@ class Simulation():
                 if(data["COIL_TEMP"] > peakT):
                     peakT = data["COIL_TEMP"]
 
-            x.add_row([st,s[len(s)-1]["COIL_TIME"],peakT,peakC,s[0]["INDUCTANCE"],peakV])
+                if(data["CAP_VOLTAGE"] < minV):
+                    minV = data["CAP_VOLTAGE"]
+
+
+            x.add_row([st,s[len(s)-1]["COIL_TIME"],peakT,minV,peakC,s[0]["INDUCTANCE"],peakV])
             #print(s[len(s)-1])
 
             st = st + 1
@@ -797,32 +808,49 @@ class Simulation():
             turns = wireLen / (2*math.pi*(core_dia/2))
             print("%s : %f" % (gauges,turns))
  
+    #dynamically build a list of coil configs that fall within the range
+    def buildCoilConfigs(self,min_i, max_i, length, shaft_dia, max_coil_dia, proj_dia, num):
+
+
+        return 0
 
 if __name__ == "__main__":
-   
-
-    for i in range(10):
-        cfg = {}
-        cfg["profile"]  = i
-        cfg["cid"]      = 0
-        cfg["length"]   = 0.035
-        cfg["proj_dia"] = 0.006
-        cfg["core_dia"] = 0.0098
-        cfg["turns"]    =  250#80 + (i*10)
-        cfg["gauge"]    = "20AWG"
-        cfg["locx"]     = 0
-        cfg["ambt"]     = 25
-        cfg["maxt"]     = 60
-        cfg["maxc"]     = 500
-
-        coil_profiles.append(cfg)
-
-    sim = Simulation(200,0.006,coil_profiles[0],8,0.0127)
-
-    #ret = sim.Optimize() 
-
-    ret = sim.Exec2(True)
-    sim.showResults(ret,plots=True,verbose=False)
+    parser = argparse.ArgumentParser(description="Multi-Stage Coilgun simulator/optimizer")
+    parser.add_argument('-o','--op',dest='simOp',help="Simulation Operation to Perform")
+    parser.add_argument('-p','--pre',dest='preShoot',help="When simulating, pre-activate each coil before projectile arrival: AUTO=auto calculate optimal firing time, DISABLE = do not use preshoot activation",default="AUTO")
 
 
-    sim.coilCalculator(0.5,0.035,0.0098)
+
+    args = parser.parse_args()
+
+    if(args.simOp == "exec"):
+        preshoot_en = False
+        if(args.preShoot == "AUTO"):
+            preshoot_en = True
+
+
+        for i in range(10):
+            cfg = {}
+            cfg["profile"]  = i
+            cfg["cid"]      = 0
+            cfg["length"]   = 0.035
+            cfg["proj_dia"] = 0.006
+            cfg["core_dia"] = 0.0098
+            cfg["turns"]    = 350#80 + (i*10)
+            cfg["gauge"]    = "22AWG"
+            cfg["locx"]     = 0
+            cfg["ambt"]     = 25
+            cfg["maxt"]     = 60
+            cfg["maxc"]     = 500
+
+            coil_profiles.append(cfg)
+
+        sim = Simulation(200,0.006,coil_profiles[0],8,0.0127)
+
+        #ret = sim.Optimize() 
+
+        ret = sim.Exec2(preshoot_en)
+        sim.showResults(ret,plots=True,verbose=False)
+
+    elif(args.simOp == "calc"):
+        sim.coilCalculator(0.5,0.035,0.0098)
