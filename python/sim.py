@@ -9,9 +9,11 @@ coil_profiles = []
 copper_res = 1.72 * math.pow(10,-8) #ohm/m
 wire_dict = {"18AWG" : 1.02362,
              "20AWG" : 0.8128,
+             #"20AWG" : 0.85,
              "22AWG" : 0.64262,
              "24AWG" : 0.51054,
              "26AWG" : 0.40386,
+             #"26AWG" : 0.43,
              "28AWG" : 0.32004,
              "30AWG" : 0.254}
 
@@ -54,21 +56,46 @@ class Coil():
         
         #calculate constants or derived values 
         #based on user provided data 
-
-        self.u0             = 4*math.pi*pow(10,-7)
-        self.area           = math.pi*pow(self.core_dia/2,2)
-        
-        self.forceArea      = math.pi*pow(self.proj_dia/2,2)
-
-        self.wireLen        = (2*math.pi*(self.core_dia/2)) * self.turns 
+      
         self.wireDia        = (wire_dict[self.gauge]/1000)  
         self.wireArea       = math.pi*pow(self.wireDia/2,2)
         self.wireAreaMils   =  (self.wireArea * 1973525241.77) 
-        self.seriesR        = copper_res * self.wireLen/self.wireArea
-        self.airGap         = self.out_dia - self.core_dia
-        self.maxSLT         = math.floor(self.len / self.wireDia)
+        self.maxSLT         = math.floor(self.len / self.wireDia) 
         self.layers         = math.ceil(self.turns / self.maxSLT)
-    
+ 
+        self.wireLen        = 0
+        layer               = 0
+        for i in range(self.turns+1):
+            if(i == 0):
+                layer = 0
+            else:
+                layer = math.ceil(i/self.maxSLT) - 1 
+
+            self.wireLen = self.wireLen + (2*math.pi*((self.core_dia + layer*self.wireDia*2)/2))
+        
+        self.seriesR        = copper_res * self.wireLen/self.wireArea
+        
+        self.u0             = 4*math.pi*pow(10,-7)
+        self.wireDepth      = self.layers * self.wireDia 
+        
+        #mean outer diameter
+        self.out_dia        = self.core_dia + self.wireDepth
+        
+        self.inner_r        = (self.core_dia)/2
+        self.outer_r        = (self.core_dia + self.layers*self.wireDia*2)/2
+
+
+        #mean coil area used for inductance calcs
+        self.area           = math.pi*pow(self.core_dia/2,2)
+
+        #projectile area used for force calcs 
+        self.forceArea      = math.pi*pow(self.proj_dia/2,2)
+
+       
+        #self.airGap         = self.out_dia - self.core_dia
+        self.airGap         = self.core_dia - self.proj_dia
+
+   
         self.maxOnTime = 0.0297 * math.log10((self.maxt + 234)/(self.ambt + 234)) * (pow((self.wireAreaMils) ,2)/pow(self.maxc,2))
 
         self.dumpStats()
@@ -78,7 +105,7 @@ class Coil():
             self.cid        = config["cid"];
             self.len        = config["length"]
             self.core_dia   = config["core_dia"]
-            self.out_dia    = config["out_dia"]
+            #self.out_dia    = config["out_dia"]
             self.turns      = config["turns"]
             self.locx       = config["locx"]
             self.gauge      = config["gauge"]
@@ -92,12 +119,19 @@ class Coil():
         return self.seriesR
         
     def dumpStats(self):
+        ind = self.calcInductance(0,100)
+        print(ind)
+
         x = PrettyTable()
         x.field_names = ["Parameter", "Value", "Description"]
         x.add_row(["Coil ID",self.cid,"Coil Identifier"])
+        x.add_row(["Air Core Inductance",ind,"Coil Inductance (air-core) (H)"])
         x.add_row(["Coil Length",self.len,"Coil Length (m)"])
-        x.add_row(["Coil Inner Diameter",self.core_dia,"Coil Inner Diameter (Projectile) (m)"])
-        x.add_row(["Coil Outer Diameter",self.out_dia,"Coil Outer Diameter (Barrel) (m)"])
+        x.add_row(["Coil Inner Diameter",self.core_dia,"Barrel outer Diameter (m)"])
+        x.add_row(["Projectile Diameter",self.proj_dia,"Projectile Diameter (m)"])
+        x.add_row(["Coil Outer Diameter",self.out_dia,"Mean diameter of multilayer coil (m)"])
+        x.add_row(["Coil Inner Radius",self.inner_r,"inner radius of coil (m)"])
+        x.add_row(["Coil Outer Radius",self.outer_r,"outer radius of coil (m)"])
         x.add_row(["Coil Cross-sectional Area",self.area,"Coil Cross-sectional Area (Barrel) (m)"])
         x.add_row(["Coil Air Gap",self.airGap,"Coil Air Gap"])
         x.add_row(["Coil turns",self.turns,"Number of Wire Turns in Coil"])
@@ -133,17 +167,22 @@ class Coil():
             normx = self.len; 
 
         #print(normx)        
-        L0      = (ur*self.u0*pow(self.turns,2)*self.area)/self.len
-        L1      = L0 / ur
+        #old single layer calc
+        #L0      = (ur*self.u0*pow(self.turns,2)*self.area)/self.len
+        
+        #l(uH)  = 31.6*N
+         
+        L1      = (31.6 * pow(self.turns,2) * pow(self.out_dia/2,2))/(6*(self.out_dia/2) + 9*self.len + 10*(self.wireDepth)) 
+        L1      = L1 / pow(10,6)
+
+        L0      = L1 * ur
         alpha   = math.log(ur)
         
-        if(normx == 0):
-            return L0
-        else: 
-            Lx  = L0 * math.exp(-(alpha/self.len)*(normx))
-            return(Lx) 
+        Lx  = L0 *  math.exp(-(alpha/self.len)*(normx))
+        
+        return(Lx) 
 
-        return 0
+        #return 0
 
 
 #coil circuit, a combination of a coil, capacitor, switch series resistance
@@ -520,7 +559,7 @@ class Simulation():
                 for cfgs in self.getCoilConfig():
                     print(cfgs)
 
-                self.dumpConfig()
+                #self.dumpConfig()
 
                 #update coil configuration
                 self.updateCoil(stages,coils)
@@ -555,8 +594,7 @@ if __name__ == "__main__":
         cfg["length"]   = 0.035
         cfg["proj_dia"] = 0.006
         cfg["core_dia"] = 0.0098
-        cfg["out_dia"]  = 0.017
-        cfg["turns"]    =  200#80 + (i*10)
+        cfg["turns"]    =  150#80 + (i*10)
         cfg["gauge"]    = "20AWG"
         cfg["locx"]     = 0
         cfg["ambt"]     = 25
@@ -568,5 +606,6 @@ if __name__ == "__main__":
     sim = Simulation(200,0.006,coil_profiles[0],8,0.0127)
 
     #ret = sim.Optimize() 
+
     ret = sim.Exec(True)
     sim.showResults(ret,plots=True)
