@@ -315,7 +315,7 @@ class Simulation():
             tmp = cfg
             tmp["cid"] = i
             tmp["locx"] = i*(self.spacing + tmp["length"])
-            tmp["turns"] = cfg["turns"]-20
+            #tmp["turns"] = cfg["turns"]-20
 
             self.coils.append(CoilCircuit(i,self.V0,self.C,self.switchR,self.proj,tmp))
 
@@ -809,8 +809,31 @@ class Simulation():
             print("%s : %f" % (gauges,turns))
  
     #dynamically build a list of coil configs that fall within the range
-    def buildCoilConfigs(self,min_i, max_i, length, shaft_dia, max_coil_dia, proj_dia, num):
+    def buildCoilConfigs(self,voltage,capacitance,switchR,min_i, max_i, length, shaft_dia, max_coil_dia, proj_dia, num):
+        minT = 50
+        maxT = 400
+        turnSteps = 4
+        #iterate over turns
+        cfgs = []
+        for i in range(minT,maxT,turnSteps):
+            for g in wire_dict:
+                cfg["profile"]  = 0
+                cfg["cid"]      = 0
+                cfg["length"]   = length
+                cfg["proj_dia"] = proj_dia
+                cfg["core_dia"] = shaft_dia
+                cfg["turns"]    = i
+                cfg["gauge"]    = g
+                cfg["locx"]     = 0
+                cfg["ambt"]     = 25
+                cfg["maxt"]     = 60
+                cfg["maxc"]     = max_i
+                
+                #proj  = 
+                coilC = CoilCircuit(0,voltage,capacitance,switchR,self.pro,tmp)
 
+
+            
 
         return 0
 
@@ -818,10 +841,23 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Multi-Stage Coilgun simulator/optimizer")
     parser.add_argument('-o','--op',dest='simOp',help="Simulation Operation to Perform")
     parser.add_argument('-p','--pre',dest='preShoot',help="When simulating, pre-activate each coil before projectile arrival: AUTO=auto calculate optimal firing time, DISABLE = do not use preshoot activation",default="AUTO")
-
-
+    parser.add_argument('-i','--cur',dest='maxCurrent',help="Maximum per coil current limit (in Amps)",default=450,type=float)
+    parser.add_argument('-t','--time',dest='maxOnTime',help="Maximum per coil on time at max current limit (in seconds)",default=0.001,type=float)
+    parser.add_argument('-l','--len',dest='coilLength',help="Coil Length (in m)",default=0.035,type=float)
+    parser.add_argument('-pd','--projd',dest='projDiameter',help="Projectile Diameter (in m)",default=0.006,type=float)
+    parser.add_argument('-id','--barrelID',dest='barrelID',help="Barrel Inside Diameter (in m)",default=0.0065,type=float)
+    parser.add_argument('-od','--barrelOD',dest='barrelOD',help="Barrel Outside Diameter (in m)",default=0.0098,type=float)
+    parser.add_argument('-s','--stages',dest='numStages',help="number of coil stages",default=8,type=int)
+    parser.add_argument('-mt','--maxt',dest='maxT',help="max coil temperature (in C)",default=60,type=float)
+    parser.add_argument('-at','--ambt',dest='ambT',help="ambient temperature (in C)",default=25,type=float)
+    parser.add_argument('-cv','--capv',dest='capV',help="Inital Stage Voltage (in V)",default=200,type=int)
+    parser.add_argument('-c','--cap',dest='cap',help="Inital Stage Capacitance (in f)",default=0.006,type=float)
+    parser.add_argument('-sp','--stagespace',dest='stageSpace',help="spacing between stages (in m)",default=0.0127,type=float)
+    parser.add_argument('-v','--verbose',dest='verbose',help="Enable Verbose Reporting",default=False)
+    parser.add_argument('-plt','--plot',dest='plot',help="Generate Plots",default=False)
 
     args = parser.parse_args()
+
 
     if(args.simOp == "exec"):
         preshoot_en = False
@@ -833,24 +869,52 @@ if __name__ == "__main__":
             cfg = {}
             cfg["profile"]  = i
             cfg["cid"]      = 0
-            cfg["length"]   = 0.035
-            cfg["proj_dia"] = 0.006
-            cfg["core_dia"] = 0.0098
+            cfg["length"]   = args.coilLength
+            cfg["proj_dia"] = args.projDiameter
+            cfg["core_dia"] = args.barrelOD
             cfg["turns"]    = 350#80 + (i*10)
             cfg["gauge"]    = "22AWG"
             cfg["locx"]     = 0
-            cfg["ambt"]     = 25
-            cfg["maxt"]     = 60
-            cfg["maxc"]     = 500
+            cfg["ambt"]     = args.ambT
+            cfg["maxt"]     = args.maxT
+            cfg["maxc"]     = args.maxCurrent
 
             coil_profiles.append(cfg)
 
-        sim = Simulation(200,0.006,coil_profiles[0],8,0.0127)
+        sim = Simulation(args.capV,args.cap,coil_profiles[0],args.numStages,args.stageSpace)
 
         #ret = sim.Optimize() 
 
         ret = sim.Exec2(preshoot_en)
-        sim.showResults(ret,plots=True,verbose=False)
+        
+        sim.showResults(ret,plots=bool(args.plot),verbose=bool(args.verbose))
 
     elif(args.simOp == "calc"):
         sim.coilCalculator(0.5,0.035,0.0098)
+
+
+    elif(args.simOp == "optimize"):
+        #1) build library of realistic coils to use 
+
+        #2) call optimimation function to iterate over combos 
+
+        #create a initial config template 
+        cfg = {}
+        cfg["profile"]  = i
+        cfg["cid"]      = 0
+        cfg["length"]   = 0.035
+        cfg["proj_dia"] = 0.006
+        cfg["core_dia"] = 0.0098
+        cfg["turns"]    = 350#80 + (i*10)
+        cfg["gauge"]    = "22AWG"
+        cfg["locx"]     = 0
+        cfg["ambt"]     = 25
+        cfg["maxt"]     = 60
+        cfg["maxc"]     = 500
+        
+        coil_profiles.append(cfg)
+
+
+        sim = Simulation(args.capV,args.cap,coil_profiles[0],args.numStages,args.stageSpace)
+
+
